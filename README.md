@@ -41,7 +41,36 @@ We report **Out-of-Fold (OOF) validation results** from a 5-Fold GroupKFold cros
 
 ---
 
-## 3. Directory Structure
+## 3. Key Visual Insights & Model Analytics
+
+### Insight 1: Predictive Biometric Drivers (Feature Importance)
+The model captures multi-modal strain and recovery signatures. Sleep consistency, sleep efficiency, resting heart rate, and active-to-sedentary minute ratios dominate injury predictability.
+
+<p align="center">
+  <img src="output/feature_importance.png" alt="Feature Importance" width="850"/>
+</p>
+
+---
+
+### Insight 2: Residual Analysis & Regression Calibration (Task B)
+Residual distributions for both **Onset Day Offset** and **Recovery Duration** show unbiased error curves centered tightly around zero, outperforming mean baseline estimates across all cross-validation folds.
+
+<p align="center">
+  <img src="output/residuals_plot.png" alt="Residuals and Error Distribution" width="850"/>
+</p>
+
+---
+
+### Insight 3: Domain Risk Stratification Across Sports
+Cross-sport injury risk analysis on the evaluation cohorts demonstrates consistent discrimination across diverse athlete profiles and positions.
+
+<p align="center">
+  <img src="output/test_risk_by_sport.png" alt="Injury Risk by Sport" width="850"/>
+</p>
+
+---
+
+## 4. Directory Structure
 
 ```
 .
@@ -72,7 +101,7 @@ We report **Out-of-Fold (OOF) validation results** from a 5-Fold GroupKFold cros
 
 
 
-## 4. Reproducibility & Installation Guide
+## 5. Reproducibility & Installation Guide
 
 We assume a clean machine with **Python 3.10+**.
 
@@ -101,7 +130,7 @@ python src/predict.py --input data/test/example.csv --out output/submission_fina
 
 
 
-## 5. Core Methodology Highlights
+## 6. Core Methodology Highlights
 
 **Feature Engineering (the competitive differentiator).**
 We aggregate the multi-granularity relational tables into **one master row per athlete** over the 30-day observation window, then engineer athletic *strain* and *recovery* signals:
@@ -124,13 +153,14 @@ We sweep the classification threshold to maximize F1 while keeping recall ≥ 0.
 
 
 
-## 6. Hardware & Runtime Estimates
+## 7. Hardware & Runtime Estimates
 
 | Item | Value |
 | --- | --- |
 | Training runtime | ~3.5 minutes on an 8-core CPU (3000 athletes, 5 folds × 3 models × 2 stages) |
 | Hardware used | Standard CPU training (no GPU required; XGBoost/LightGBM/CatBoost all CPU) |
 | Memory | Comfortable with 8 GB RAM (hourly files streamed via grouped aggregation) |
+
 
 
 *Prepared by Team Y Factor, JIS College of Engineering, for PlayHack 2026 ML Track, IIT Guwahati.*
