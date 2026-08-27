@@ -1,0 +1,28 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.class
+
+# Large dataset raw files (exceeds GitHub 100MB limit)
+*.csv
+!example.csv
+!output/*.csv
+TEst_data/
+test_data/
+
+# Environments & IDEs
+.venv/
+env/
+venv/
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log

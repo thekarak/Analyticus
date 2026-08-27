@@ -1,0 +1,11 @@
+# Analyticus - PlayHack 2026 ML Track (IIT Guwahati)
+# Python 3.10+ required
+numpy==2.4.6
+pandas==3.0.3
+scikit-learn==1.9.0
+xgboost==3.2.0
+lightgbm==4.7.0
+catboost==1.2.10
+matplotlib==3.10.9
+seaborn==0.13.2
+joblib==1.5.2
