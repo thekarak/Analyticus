@@ -133,14 +133,4 @@ We sweep the classification threshold to maximize F1 while keeping recall ≥ 0.
 | Memory | Comfortable with 8 GB RAM (hourly files streamed via grouped aggregation) |
 
 
-
-## 7. Pre-Submission Checklist
-
-- [x] `python src/train.py` runs start-to-finish with **no errors** on a clean copy of the files.
-- [x] `output/submission_final.csv` has the **same columns and row count** as `example.csv` (`athlete_id`, `injured_in_risk_window`, `onset_day_offset`, `recovery_duration`) and **zero null values** (asserted in code).
-- [x] All randomness (KFold splitters, XGBoost/LightGBM/CatBoost params) uses a **fixed `random_state=42`**, so judges reproduce our exact results.
-- [x] Trained models are saved to `models/` and `src/predict.py` regenerates the submission from them.
-
-
-
 *Prepared by Team Y Factor, JIS College of Engineering, for PlayHack 2026 ML Track, IIT Guwahati.*
