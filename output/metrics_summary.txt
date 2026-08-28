@@ -4,46 +4,57 @@ ANALYTICUS - PlayHack 2026 ML Track  |  VALIDATION REPORT
 Train athletes          : 3000
 Injury prevalence       : 0.3500
 CV strategy             : GroupKFold (k=5, grouped by athlete_id)
-Optimized threshold     : 0.120  (recall_floor=0.9)
+Optimized threshold     : 0.054  (recall_floor=0.9)
 
 --------------------------------------------------------------------------
 TASK A - CLASSIFICATION (Injury)  metric: F1-Score
 --------------------------------------------------------------------------
 model     threshold  F1      Precision  Recall  Accuracy
 --------  ---------  ------  ---------  ------  --------
-XGBoost   0.12       0.9981  0.9971     0.999   0.9987  
-LightGBM  0.12       0.999   0.999      0.999   0.9993  
-CatBoost  0.12       0.999   0.9981     1.0     0.9993  
-ENSEMBLE  0.12       0.9995  0.999      1.0     0.9997  
+XGBoost   0.054      0.5312  0.3788     0.8886  0.451   
+LightGBM  0.054      0.5324  0.3822     0.8771  0.4607  
+CatBoost  0.054      0.5187  0.3514     0.9905  0.3567  
+ENSEMBLE  0.054      0.5215  0.3589     0.9533  0.3877  
 
 --------------------------------------------------------------------------
 TASK B - REGRESSION (Onset & Recovery)  metric: MAE (injured only)
 --------------------------------------------------------------------------
 model     MAE_onset  MAE_recovery  R2_onset  R2_recovery
 --------  ---------  ------------  --------  -----------
-xgb       5.5558     2.0417        0.3896    0.5061     
-lgbm      5.6322     2.1027        0.3693    0.4882     
-cb        5.486      2.064         0.4194    0.5096     
-ENSEMBLE  5.5073     2.0366        0.407     0.5158     
+xgb       2.7363     3.0603        0.7644    0.1356     
+lgbm      2.721      3.0952        0.7657    0.1173     
+cb        2.7625     3.0362        0.7767    0.1588     
+ENSEMBLE  2.6945     3.0406        0.7751    0.1566     
 
 --------------------------------------------------------------------------
 BASELINE & SKILL SCORE
 --------------------------------------------------------------------------
 Baseline onset MAE      : 7.6148  (mean=15.33)
 Baseline recovery MAE   : 3.2416  (mean=11.55)
-Model    onset MAE      : 5.5073
-Model    recovery MAE   : 2.0366
-Skill Score (onset)     : 0.2768
-Skill Score (recovery)  : 0.3717
+Model    onset MAE      : 2.6945
+Model    recovery MAE   : 3.0406
+Skill Score (onset)     : 0.6461
+Skill Score (recovery)  : 0.0620
 
 --------------------------------------------------------------------------
 COMPETITION-STYLE PROXY (30-day penalty on false negatives)
 --------------------------------------------------------------------------
-Effective onset MAE     : 5.5073
-Effective recovery MAE  : 2.0366
-False Negatives (OOF)   : 0
+Effective onset MAE     : 4.0945
+Effective recovery MAE  : 4.4406
+False Negatives (OOF)   : 49
 
-Top 5 features         : sleep_TotalMinutesAsleep_std, sleep_sleep_eff_mean, sleep_consistency, hr_MinHeartRate_min, daily_FairlyActiveMinutes_mean
+--------------------------------------------------------------------------
+FEATURE ABLATION AUDIT  (drop: prior_season_injury_count)
+--------------------------------------------------------------------------
+variant  threshold  F1      Precision  Recall
+-------  ---------  ------  ---------  ------
+WITH     0.05       0.5201  0.3565     0.961 
+WITHOUT  0.06       0.5265  0.3653     0.9419
 
-Runtime                 : 221.1s
+Interpretation: if 'WITHOUT' metrics stay close to 'WITH', the dropped
+feature is NOT supplying leakage and the model is robust to its removal.
+
+Top 5 features         : daily_active_minutes_std, sleep_TotalMinutesAsleep_std, height_cm, cal_hr_max, sleep_sleep_eff_mean
+
+Runtime                 : 336.7s
 ==========================================================================

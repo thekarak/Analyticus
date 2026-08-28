@@ -18,7 +18,7 @@ warnings.filterwarnings("ignore")
 
 from sklearn.preprocessing import RobustScaler
 from sklearn.model_selection import GroupKFold
-from sklearn.metrics import f1_score, recall_score
+from sklearn.metrics import f1_score, recall_score, precision_score, confusion_matrix
 
 import xgboost as xgb
 import lightgbm as lgb
@@ -68,6 +68,14 @@ def _parse_dates(series, fmt=None):
     return pd.to_datetime(series, errors="coerce")
 
 
+def _clip_obs(df, id_col, date_col, window=30):
+    """Leakage guard: keep ONLY the first `window` days (Observation Window)
+    of each athlete. Data from days 31+ (Risk Window, where injuries occur)
+    must never enter training features."""
+    mn = df.groupby(id_col)[date_col].transform("min")
+    return df[(df[date_col] - mn).dt.days < window]
+
+
 def build_features(ids, data_dir):
     """
     Build ONE master feature row per athlete_id (given by `ids`) from the
@@ -98,6 +106,7 @@ def build_features(ids, data_dir):
         d = raw["daily"].copy()
         d = d[d["Id"].isin(ids)].rename(columns={"Id": "athlete_id"})
         d["ActivityDate"] = _parse_dates(d["ActivityDate"], "%Y-%m-%d")
+        d = _clip_obs(d, "athlete_id", "ActivityDate")
         d["active_minutes"] = (d["VeryActiveMinutes"].fillna(0)
                                + d["FairlyActiveMinutes"].fillna(0)
                                + d["LightlyActiveMinutes"].fillna(0))
@@ -125,6 +134,7 @@ def build_features(ids, data_dir):
         s = raw["sleep"].copy()
         s = s[s["Id"].isin(ids)].rename(columns={"Id": "athlete_id"})
         s["SleepDay"] = _parse_dates(s["SleepDay"], "%Y-%m-%d")
+        s = _clip_obs(s, "athlete_id", "SleepDay")
         s["sleep_eff"] = s["TotalMinutesAsleep"] / s["TotalTimeInBed"].replace(0, np.nan)
         g = s.groupby("athlete_id").agg({
             "TotalSleepRecords": ["mean", "sum"],
@@ -140,6 +150,7 @@ def build_features(ids, data_dir):
         w = raw["weight"].copy()
         w = w[w["Id"].isin(ids)].rename(columns={"Id": "athlete_id"})
         w["Date"] = _parse_dates(w["Date"], "%Y-%m-%d")
+        w = _clip_obs(w, "athlete_id", "Date")
         g = w.groupby("athlete_id").agg({
             "WeightKg": ["mean", "std"],
             "Fat": ["mean"],
@@ -162,6 +173,7 @@ def build_features(ids, data_dir):
         h = raw["hr"].copy()
         h = h[h["Id"].isin(ids)].rename(columns={"Id": "athlete_id"})
         h["ActivityHour"] = _parse_dates(h["ActivityHour"])   # ISO 8601
+        h = _clip_obs(h, "athlete_id", "ActivityHour")
         g = h.groupby("athlete_id").agg({
             "AvgHeartRate": ["mean", "std", "max"],
             "MinHeartRate": ["mean", "min"],     # resting HR proxy
@@ -175,6 +187,7 @@ def build_features(ids, data_dir):
         st = raw["steps"].copy()
         st = st[st["Id"].isin(ids)].rename(columns={"Id": "athlete_id"})
         st["ActivityHour"] = _parse_dates(st["ActivityHour"], "%m/%d/%Y %I:%M:%S %p")
+        st = _clip_obs(st, "athlete_id", "ActivityHour")
         g = st.groupby("athlete_id")["StepTotal"].agg(["mean", "std", "max"])
         g.columns = [f"steps_hr_{s}" for s in g.columns]
         feat = feat.join(g)
@@ -184,6 +197,7 @@ def build_features(ids, data_dir):
         c = raw["cal"].copy()
         c = c[c["Id"].isin(ids)].rename(columns={"Id": "athlete_id"})
         c["ActivityHour"] = _parse_dates(c["ActivityHour"], "%m/%d/%Y %I:%M:%S %p")
+        c = _clip_obs(c, "athlete_id", "ActivityHour")
         g = c.groupby("athlete_id")["Calories"].agg(["mean", "max"])
         g.columns = [f"cal_hr_{s}" for s in g.columns]
         feat = feat.join(g)
@@ -193,6 +207,7 @@ def build_features(ids, data_dir):
         it = raw["inten"].copy()
         it = it[it["Id"].isin(ids)].rename(columns={"Id": "athlete_id"})
         it["ActivityHour"] = _parse_dates(it["ActivityHour"], "%m/%d/%Y %I:%M:%S %p")
+        it = _clip_obs(it, "athlete_id", "ActivityHour")
         g = it.groupby("athlete_id")[["TotalIntensity", "AverageIntensity"]].mean()
         g.columns = [f"inten_hr_{s}" for s in g.columns]
         feat = feat.join(g)
@@ -201,6 +216,9 @@ def build_features(ids, data_dir):
     if raw["sessions"] is not None:
         ss = raw["sessions"].copy()
         ss = ss[ss["athlete_id"].isin(ids)]
+        if "date" in ss.columns:
+            ss["date"] = _parse_dates(ss["date"], "%Y-%m-%d")
+            ss = _clip_obs(ss, "athlete_id", "date")
         ss["total_hours"] = (ss["end_hour"] - ss["start_hour"]).clip(lower=0)
         g = ss.groupby("athlete_id").agg({
             "session_id": ["count"],
@@ -351,19 +369,31 @@ def proba_or_pred(model, X):
     return model.predict(X)
 
 
-def optimize_threshold(y_true, oof_proba, recall_floor=RECALL_FLOOR):
-    """Pick threshold maximizing F1 while keeping recall >= recall_floor
-    (defends against the 30-day false-negative penalty)."""
-    best_t, best_f1, best_rec = 0.5, -1, 0
-    for t in np.linspace(0.05, 0.6, 56):
+def optimize_threshold(y_true, oof_proba, recall_floor=RECALL_FLOOR, fn_weight=5.0):
+    """Penalty-aware threshold for the 30-day false-negative penalty.
+
+    Among candidate thresholds that keep recall >= `recall_floor`, pick the one
+    minimizing a business cost  cost = fn_weight * FN + FP  (false negatives are
+    far more expensive than false positives in this competition's scoring).
+    If no threshold reaches the recall floor we fall back to maximizing recall.
+    Search grid is 0.05..0.50 step 0.01.
+    """
+    y_true = np.asarray(y_true)
+    oof_proba = np.asarray(oof_proba)
+    best_t, best_cost, best_f1, best_rec = 0.5, np.inf, 0.0, 0.0
+    for t in np.arange(0.05, 0.50 + 1e-9, 0.01):
         pred = (oof_proba >= t).astype(int)
+        tn, fp, fn, tp = confusion_matrix(y_true, pred, labels=[0, 1]).ravel()
         rec = recall_score(y_true, pred)
+        if rec < recall_floor:
+            continue
+        cost = fn_weight * fn + fp
         f1 = f1_score(y_true, pred)
-        if rec >= recall_floor and f1 > best_f1:
-            best_t, best_f1, best_rec = t, f1, rec
-    if best_f1 < 0:
-        best_rec, best_t = -1, 0.05
-        for t in np.linspace(0.05, 0.6, 56):
+        if cost < best_cost:
+            best_t, best_cost, best_f1, best_rec = t, cost, f1, rec
+    if best_cost == np.inf:  # recall floor unreachable -> maximize recall
+        best_rec, best_t = -1.0, 0.05
+        for t in np.arange(0.05, 0.50 + 1e-9, 0.01):
             pred = (oof_proba >= t).astype(int)
             rec = recall_score(y_true, pred)
             if rec > best_rec:

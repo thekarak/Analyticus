@@ -93,6 +93,12 @@ def run_eda():
     sa = sl.groupby("Id").agg(sleep_min=("TotalMinutesAsleep", "mean"),
                               sleep_eff=("eff", "mean")).reset_index().rename(columns={"Id": "athlete_id"})
     df = df.merge(sa, on="athlete_id", how="left")
+    # per-athlete sleep-duration variability (coefficient of variation)
+    sl_cv = (sl.groupby("Id")["TotalMinutesAsleep"]
+             .agg(lambda x: x.std() / x.mean() if x.mean() else np.nan)
+             .rename("sleep_cv").reset_index().rename(columns={"Id": "athlete_id"}))
+    df = df.merge(sl_cv, on="athlete_id", how="left")
+    df["sleep_cv"] = df["sleep_cv"].fillna(df["sleep_cv"].median())
     ha = hr.groupby("Id").agg(rest_hr=("MinHeartRate", "mean"),
                               peak_hr=("MaxHeartRate", "mean")).reset_index().rename(columns={"Id": "athlete_id"})
     df = df.merge(ha, on="athlete_id", how="left")
@@ -127,9 +133,10 @@ def run_eda():
     save(fig, "03_activity_by_injury.png")
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    sns.boxplot(data=df, x="injured_in_risk_window", y="sedentary", ax=axes[0], palette=["#41ab5d", "#d7301f"])
+    sns.boxplot(data=df, x="injured_in_risk_window", y="sleep_cv", ax=axes[0], palette=["#41ab5d", "#d7301f"])
     sns.boxplot(data=df, x="injured_in_risk_window", y="sleep_eff", ax=axes[1], palette=["#41ab5d", "#d7301f"])
-    axes[0].set_title("Sedentary Minutes by Injury Status"); axes[1].set_title("Sleep Efficiency by Injury Status")
+    axes[0].set_title("Sleep Duration Variability (CV) by Injury Status")
+    axes[1].set_title("Sleep Efficiency by Injury Status")
     for a in axes:
         a.set_xlabel(""); a.set_xticklabels(["Healthy", "Injured"])
     save(fig, "04_sedentary_sleep_by_injury.png")
@@ -184,6 +191,39 @@ def _fmt_table(rows):
     return hdr + "\n" + sep + "\n" + body
 
 
+def ablation_cv(drop_cols, X, y_clf, groups, num_cols, cat_cols):
+    """Feature-ablation / leakage audit.
+
+    Trains the classifier ensemble twice: (a) full feature set (WITH the suspect
+    columns) and (b) with `drop_cols` removed (WITHOUT). Reports OOF F1 /
+    Precision / Recall for each so we can confirm the dropped columns are not
+    carrying leakage and the model is robust to their removal.
+    """
+    from sklearn.model_selection import GroupKFold
+    from sklearn.metrics import f1_score, precision_score, recall_score
+    gkf = GroupKFold(n_splits=N_FOLDS)
+    rows = []
+    for variant, cols in [("WITH", num_cols),
+                          ("WITHOUT", [c for c in num_cols if c not in drop_cols])]:
+        oof = np.zeros(len(y_clf))
+        for tr, va in gkf.split(X, y_clf, groups):
+            prep = Preprocessor(cat_cols, cols).fit(X.iloc[tr], y_clf[tr])
+            probas = []
+            for model in make_classifiers().values():
+                model.fit(prep.transform(X.iloc[tr]), y_clf[tr])
+                probas.append(proba_or_pred(model, prep.transform(X.iloc[va])))
+            oof[va] = np.mean(probas, axis=0)
+        t, _, rec = optimize_threshold(y_clf, oof)
+        pred = (oof >= t).astype(int)
+        rows.append({"variant": variant, "threshold": round(t, 3),
+                     "F1": round(f1_score(y_clf, pred), 4),
+                     "Precision": round(precision_score(y_clf, pred), 4),
+                     "Recall": round(recall_score(y_clf, pred), 4)})
+    print("\n[ablation] dropping", drop_cols)
+    print(_fmt_table(rows))
+    return rows
+
+
 # --------------------------------------------------------------------------- #
 # MAIN
 # --------------------------------------------------------------------------- #
@@ -219,6 +259,9 @@ def main():
             "rec_xgb", "rec_lgbm", "rec_cb", "rec_ens"]}
     fold_models = {"clf": defaultdict(list), "onset": defaultdict(list), "rec": defaultdict(list)}
     fold_preps = []
+    fold_thresholds = []
+    oof_onset_true, oof_onset_pred = [], []
+    oof_rec_true, oof_rec_pred = [], []
 
     for fold, (tr, va) in enumerate(gkf.split(X, y_clf, groups)):
         print(f"\n[cv] fold {fold + 1}/{N_FOLDS}  train={len(tr)} val={len(va)}")
@@ -241,15 +284,31 @@ def main():
             model.fit(Xtr_i, yrec_i); oof["rec_" + name][va] = model.predict(Xva)
             fold_models["rec"][name].append(model)
 
+        # per-fold ensemble threshold (averaged later) + OOF residual collection
+        fold_ens = (oof["xgb"][va] + oof["lgbm"][va] + oof["cb"][va]) / 3.0
+        ft, _, _ = optimize_threshold(y_clf[va], fold_ens)
+        fold_thresholds.append(ft)
+        va_inj = y_clf[va] == 1
+        if va_inj.any():
+            on_va = (oof["onset_xgb"][va] + oof["onset_lgbm"][va] + oof["onset_cb"][va]) / 3.0
+            rec_va = (oof["rec_xgb"][va] + oof["rec_lgbm"][va] + oof["rec_cb"][va]) / 3.0
+            oof_onset_true.extend(y_onset[va][va_inj].tolist())
+            oof_onset_pred.extend(on_va[va_inj].tolist())
+            oof_rec_true.extend(y_recovery[va][va_inj].tolist())
+            oof_rec_pred.extend(rec_va[va_inj].tolist())
+
     oof["ens"] = (oof["xgb"] + oof["lgbm"] + oof["cb"]) / 3.0
     oof["onset_ens"] = (oof["onset_xgb"] + oof["onset_lgbm"] + oof["onset_cb"]) / 3.0
     oof["rec_ens"] = (oof["rec_xgb"] + oof["rec_lgbm"] + oof["rec_cb"]) / 3.0
 
-    best_t, best_f1, best_rec = optimize_threshold(y_clf, oof["ens"])
+    best_t = float(np.mean(fold_thresholds))
     oof_pred = (oof["ens"] >= best_t).astype(int)
-    print(f"\n[step5] optimized threshold = {best_t:.3f}  (F1={best_f1:.4f}, Recall={best_rec:.4f})")
 
     from sklearn.metrics import f1_score, precision_score, recall_score
+    best_f1 = float(f1_score(y_clf, oof_pred))
+    best_rec = float(recall_score(y_clf, oof_pred))
+    print(f"\n[step5] optimized threshold = {best_t:.3f}  "
+          f"(averaged over {len(fold_thresholds)} folds; F1={best_f1:.4f}, Recall={best_rec:.4f})")
     def clf_metrics(proba, name):
         pred = (proba >= best_t).astype(int)
         return {"model": name, "threshold": round(best_t, 3),
@@ -291,11 +350,19 @@ def main():
             eff_rec.append(abs(oof["rec_ens"][i] - y_recovery[i]) + pen)
     eff_mae_on, eff_mae_rec = np.mean(eff_on), np.mean(eff_rec)
 
+    # ---- FEATURE ABLATION AUDIT (FIX 3) ------------------------------------ #
+    abl_rows = ablation_cv(["prior_season_injury_count"], X, y_clf, groups, NUM_COLS, CAT_COLS)
+    abl_lines = ["", "-" * 74, "FEATURE ABLATION AUDIT  (drop: prior_season_injury_count)", "-" * 74,
+                 _fmt_table(abl_rows), "",
+                 "Interpretation: if 'WITHOUT' metrics stay close to 'WITH', the dropped",
+                 "feature is NOT supplying leakage and the model is robust to its removal."]
+
     # ---- STEP 6 : test prediction ---------------------------------------- #
     sub = pd.read_csv(SUB_TEMPLATE)
     test_ids = sub["athlete_id"].tolist()
     test_data_dir = resolve_test_dir(test_ids)
     real_test = False
+    base_rate = float(y_clf.mean())
     if test_data_dir is not None:
         print(f"\n[step6] building test features from: {test_data_dir}")
         test_feat = add_advanced_features(build_features(test_ids, test_data_dir))
@@ -318,14 +385,28 @@ def main():
         clf_acc = predict_ensemble("clf", test_feat)
         on_acc = predict_ensemble("onset", test_feat)
         rec_acc = predict_ensemble("rec", test_feat)
-        test_injured = (clf_acc >= best_t).astype(int)
+        # PRIMARY submission: recall-boosted -> flag top `base_rate` fraction by
+        # risk score (matches injury prevalence; balances Task A F1 vs the 30-day FN penalty)
+        k = int(round(base_rate * len(test_ids)))
+        order = np.argsort(-clf_acc)
+        test_injured = np.zeros(len(test_ids), dtype=int)
+        test_injured[order[:k]] = 1
         pred_onset, pred_recovery = on_acc, rec_acc
-        print(f"[step6] real test predictions: injured={int(test_injured.sum())}/{len(test_ids)}")
+        print(f"[step6] real test predictions (recall-boosted): injured={int(test_injured.sum())}/{len(test_ids)}")
+        # REFERENCE submission: penalty-aware model threshold kept for internal reporting
+        test_injured_model = (clf_acc >= best_t).astype(int)
+        sub_model = sub.copy()
+        sub_model["injured_in_risk_window"] = test_injured_model
+        sub_model["onset_day_offset"] = np.round(on_acc).astype(int)
+        sub_model["recovery_duration"] = np.round(rec_acc).astype(int)
+        sub_model.to_csv(os.path.join(OUTPUT, "submission_modelbased.csv"), index=False)
+        print(f"[step6] wrote output/submission_modelbased.csv  injured={int(test_injured_model.sum())}/{len(test_ids)}")
     else:
         print("\n[step6] NO TEST FEATURES AVAILABLE -> valid-format fallback submission.")
         print("        (Place test CSVs in data/test/ to generate real predictions.)")
-        base_rate = float(y_clf.mean())
-        test_injured = (np.full(len(test_ids), base_rate) >= best_t).astype(int)
+        k = int(round(base_rate * len(test_ids)))
+        test_injured = np.zeros(len(test_ids), dtype=int)
+        test_injured[:k] = 1
         pred_onset = np.full(len(test_ids), base_onset)
         pred_recovery = np.full(len(test_ids), base_recovery)
 
@@ -343,8 +424,12 @@ def main():
         pc = predict_ensemble("clf", X.iloc[va_demo])
         po = predict_ensemble("onset", X.iloc[va_demo])
         pr = predict_ensemble("rec", X.iloc[va_demo])
+        k = int(round(base_rate * len(va_demo)))
+        order = np.argsort(-pc)
+        demo_inj = np.zeros(len(va_demo), dtype=int)
+        demo_inj[order[:k]] = 1
         pd.DataFrame({"athlete_id": demo_ids,
-                      "injured_in_risk_window": (pc >= best_t).astype(int),
+                      "injured_in_risk_window": demo_inj,
                       "onset_day_offset": np.round(po).astype(int),
                       "recovery_duration": np.round(pr).astype(int)}).to_csv(
             os.path.join(OUTPUT, "submission_holdout_demo.csv"), index=False)
@@ -397,15 +482,19 @@ def main():
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     plt.tight_layout(); plt.savefig(os.path.join(OUTPUT, "confusion_matrix.png"), dpi=140); plt.close()
 
-    m = y_clf == 1
+    oof_onset_true = np.array(oof_onset_true)
+    oof_onset_pred = np.array(oof_onset_pred)
+    oof_rec_true = np.array(oof_rec_true)
+    oof_rec_pred = np.array(oof_rec_pred)
+    N = len(oof_onset_true)
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    for ax, truth, pred, title in [(axes[0], y_onset[m], oof["onset_ens"][m], "Onset Day Offset"),
-                                    (axes[1], y_recovery[m], oof["rec_ens"][m], "Recovery Duration")]:
+    for ax, truth, pred, title in [(axes[0], oof_onset_true, oof_onset_pred, "Onset Day Offset"),
+                                    (axes[1], oof_rec_true, oof_rec_pred, "Recovery Duration")]:
         ax.scatter(truth, pred, alpha=0.4, s=18, color="#d95f02")
         lim = [min(truth.min(), pred.min()), max(truth.max(), pred.max())]
         ax.plot(lim, lim, "k--", lw=1)
         ax.set_xlabel("Actual"); ax.set_ylabel("Predicted")
-        ax.set_title(f"{title}\nMAE={mean_absolute_error(truth, pred):.2f}")
+        ax.set_title(f"{title}\nMAE={mean_absolute_error(truth, pred):.2f} (N={N})")
     plt.tight_layout(); plt.savefig(os.path.join(OUTPUT, "residuals_plot.png"), dpi=140); plt.close()
 
     lines = ["=" * 74, "ANALYTICUS - PlayHack 2026 ML Track  |  VALIDATION REPORT", "=" * 74,
@@ -427,8 +516,9 @@ def main():
              "-" * 74, "COMPETITION-STYLE PROXY (30-day penalty on false negatives)", "-" * 74,
              f"Effective onset MAE     : {eff_mae_on:.4f}",
              f"Effective recovery MAE  : {eff_mae_rec:.4f}",
-             f"False Negatives (OOF)   : {int(cm[1, 0])}",
-             "", f"Top 5 features         : " + ", ".join(imp_df['feature'].head(5)),
+              f"False Negatives (OOF)   : {int(cm[1, 0])}",
+              *abl_lines,
+              "", f"Top 5 features         : " + ", ".join(imp_df['feature'].head(5)),
              "", f"Runtime                 : {time.time() - t0:.1f}s", "=" * 74]
     with open(os.path.join(OUTPUT, "metrics_summary.txt"), "w") as f:
         f.write("\n".join(lines))
