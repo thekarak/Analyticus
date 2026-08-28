@@ -27,17 +27,17 @@ We report **Out-of-Fold (OOF) validation results** from a 5-Fold GroupKFold cros
 
 | Task | Metric | Our Result |
 | --- | --- | --- |
-| **Task A** — Injury Prediction (Classification) | OOF **F1-Score** | **0.527** |
-| Task A — Injury Prediction | OOF **Recall** (False-Negative defense) | **0.920** (84 FN on OOF) |
+| **Task A** — Injury Prediction (Classification) | OOF **F1-Score** | **0.522** |
+| Task A — Injury Prediction | OOF **Recall** (False-Negative defense) | **0.953** (49 FN on OOF) |
 | **Task B** — Onset Day Offset (Regression) | OOF **MAE** | **2.69 days** |
 | **Task B** — Recovery Duration (Regression) | OOF **MAE** | **3.04 days** |
 | **Skill Score** (Onset, vs. mean baseline) | `max(0, 1 − MAEₘ/MAE_b)` | **0.646** |
 | **Skill Score** (Recovery, vs. mean baseline) | `max(0, 1 − MAEₘ/MAE_b)` | **0.062** |
-| **Optimized Threshold** | Decision threshold on injury probability | **0.07** (shifted far down from 0.5) |
+| **Optimized Threshold** | Decision threshold on injury probability | **0.054** (shifted far down from 0.5) |
 
 > **Note on leakage integrity (important for judges):** our first validation returned a suspicious F1 of 0.9995. Investigation showed the raw tracking logs contain **60 days per athlete** (observation window *plus* the risk window). Our feature pipeline originally aggregated all 60 days, so risk-window data (where injuries actually manifest) was leaking the label. We added a hard **observation-window clip** (`_clip_obs` in `src/preprocess.py`) that keeps only each athlete's first 30 days, eliminating look-ahead bias. The honest OOF results above are from the corrected pipeline. Classification is genuinely hard from observation-window signals alone (F1 ≈ 0.53), while onset-day regression is strong (Skill 0.65).
 
-**Why the threshold is 0.07 and not 0.5:** the competition applies a harsh **30-day penalty** whenever we predict an athlete is healthy but they are actually injured. We therefore moved the classification decision threshold *down* from the default 0.5 to **0.07** so the model maximizes recall (0.92) and minimizes catastrophic false negatives, at the cost of lower precision. To further hedge the penalty we also ship a **recall-boosted submission mode** (`python src/predict.py --recall-mode`) that guarantees the top-35%-by-probability athletes are flagged injured.
+**Why the threshold is 0.054 and not 0.5:** the competition applies a harsh **30-day penalty** whenever we predict an athlete is healthy but they are actually injured. We therefore moved the classification decision threshold *down* from the default 0.5 to **0.054** (penalty-aware grid search: minimize `5·FN + FP` over 0.05–0.50, averaged across CV folds) so the model maximizes recall (0.953) and minimizes catastrophic false negatives, at the cost of lower precision. Because predicting nearly everyone injured hurts Task A F1, our **primary `submission_final.csv` is the recall-boosted variant** — it flags the top-35%-by-probability athletes (matching the 0.35 injury prevalence). We also ship `submission_modelbased.csv` (the raw 0.054-threshold predictions, ~97% injured) as a reference, and a **recall-boosted submission mode** (`python src/predict.py --recall-mode`) for easy A/B.
 
 **Baselines for context:** predicting the training mean onset (≈15.3 days) and recovery (≈11.5 days) for every injured athlete gives MAE of 7.61 and 3.24 respectively. Our onset regressor (MAE 2.69) beats this strongly (Skill 0.65); recovery (MAE 3.04) is only marginally better than baseline.
 
@@ -91,7 +91,8 @@ Cross-sport injury risk analysis on the evaluation cohorts demonstrates consiste
 │   ├── confusion_matrix.png
 │   ├── residuals_plot.png
 │   ├── metrics_summary.txt     <-- Full validation report
-│   ├── submission_final.csv    <-- Final submission file
+│   ├── submission_final.csv    <-- Primary submission (recall-boosted, top-35% by prob)
+│   ├── submission_modelbased.csv   <-- Reference (raw 0.054-threshold predictions)
 │   ├── submission_holdout_demo.csv  <-- Proof the predict path works on real features
 │   └── eda_plots/              <-- 9 EDA insight charts (PPT-ready)
 └── data/                   <-- Where judges place the raw dataset
@@ -122,13 +123,14 @@ If you prefer, you can leave the CSVs in the project root; the code will find th
 
 ### Step 3 — Run the Pipeline
 ```bash
-# Train models, run CV, export charts + submission:
+# Train models, run CV, export charts + submission_final.csv (+ modelbased reference):
 python src/train.py
 
-# Generate predictions on (new) test data using the saved models:
-python src/predict.py --input data/test/example.csv --out output/submission_final.csv
+# (Optional) Re-generate predictions with the saved models, A/B the modes:
+python src/predict.py                       # model-threshold mode -> submission_modelbased.csv
+python src/predict.py --recall-mode         # recall-boosted mode   -> submission_final.csv
 ```
-`src/train.py` writes all artifacts into `output/` and the trained models into `models/`. `src/predict.py` reuses those models, so no retraining is needed for inference.
+`src/train.py` writes all artifacts into `output/` and the trained models into `models/`, and produces `submission_final.csv` (recall-boosted) plus `submission_modelbased.csv`. `src/predict.py` reuses those models, so no retraining is needed for inference. Test features are auto-discovered from `test_data/` (or `data/test/`).
 
 
 
@@ -140,7 +142,7 @@ We aggregate the multi-granularity relational tables into **one master row per a
 - **Biometrics:** resting heart rate (min HR), peak exertion HR (max HR), **HR reserve** (peak − resting) and **HR ratio** (peak ÷ resting).
 - **Recovery:** sleep-efficiency ratio (asleep ÷ in-bed), sleep-duration consistency (std across days), BMI trend from weight logs.
 - **Interactions:** multiplicative features such as `steps × peak HR` and `active minutes × calories`.
-This yields **77 features**; the top signals are sleep consistency, sleep efficiency, resting HR and active minutes.
+This yields **77 features**; the top signals are `daily_active_minutes_std`, `sleep_TotalMinutesAsleep_std` (sleep-duration consistency), `height_cm`, `cal_hr_max` (peak heart-rate load) and `sleep_sleep_eff_mean` (sleep efficiency).
 
 **Modeling Approach — Dual-Stage Ensemble.**
 - **Stage 1 (Classification):** XGBoost + LightGBM + CatBoost classifiers, soft-voted, to detect injury risk. Trained on the full athlete set.
@@ -151,7 +153,7 @@ This yields **77 features**; the top signals are sleep consistency, sleep effici
 Every preprocessing step (median imputation, smoothed target-encoding, `RobustScaler`) is **fit on the training fold only** and applied to validation/test — and CV is grouped by `athlete_id` so the model is tested on entirely unseen athletes. Critically, we also **clip every athlete's logs to the first 30 days (Observation Window)** via `_clip_obs()` in `src/preprocess.py`; the raw files contain 60 days (observation + risk window), and using days 31–60 would be look-ahead bias since injuries occur in the risk window. This safeguard is what keeps our OOF scores honest.
 
 **Threshold Optimization.**
-We sweep the classification threshold to maximize F1 while keeping recall ≥ 0.90, explicitly defending against the 30-day false-negative penalty. The chosen threshold (0.12) trades a little precision for *zero missed injuries*.
+We perform a penalty-aware sweep of the classification threshold to minimize `5·FN + FP` while keeping recall ≥ 0.90 (grid 0.05–0.50 step 0.01, averaged across the 5 CV folds), explicitly defending against the 30-day false-negative penalty. The chosen threshold (**0.054**) trades precision for high recall (**0.953**, **49** false negatives on OOF). The final uploaded file uses the prevalence-matched recall-boosted variant to keep Task A F1 competitive.
 
 
 
@@ -159,7 +161,7 @@ We sweep the classification threshold to maximize F1 while keeping recall ≥ 0.
 
 | Item | Value |
 | --- | --- |
-| Training runtime | ~3.5 minutes on an 8-core CPU (3000 athletes, 5 folds × 3 models × 2 stages) |
+| Training runtime | ~6 minutes on an 8-core CPU (3000 athletes, 5 folds × 3 models × 2 stages) |
 | Hardware used | Standard CPU training (no GPU required; XGBoost/LightGBM/CatBoost all CPU) |
 | Memory | Comfortable with 8 GB RAM (hourly files streamed via grouped aggregation) |
 
