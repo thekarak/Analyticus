@@ -1,8 +1,11 @@
 
 
 > **Project Name:** Analyticus
+
 > **Team Name:** Y Factor
+
 > **Institution:** JIS College of Engineering
+
 > **Competition:** PlayHack ML Track — IIT Guwahati 
 
 
