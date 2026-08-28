@@ -40,7 +40,7 @@ We report **Out-of-Fold (OOF) validation results** from a 5-Fold GroupKFold cros
 
 > **Note on leakage integrity (important for judges):** our first validation returned a suspicious F1 of 0.9995. Investigation showed the raw tracking logs contain **60 days per athlete** (observation window *plus* the risk window). Our feature pipeline originally aggregated all 60 days, so risk-window data (where injuries actually manifest) was leaking the label. We added a hard **observation-window clip** (`_clip_obs` in `src/preprocess.py`) that keeps only each athlete's first 30 days, eliminating look-ahead bias. The honest OOF results above are from the corrected pipeline. Classification is genuinely hard from observation-window signals alone (F1 ≈ 0.53), while onset-day regression is strong (Skill 0.65).
 
-**Why the threshold is 0.054 and not 0.5:** the competition applies a harsh **30-day penalty** whenever we predict an athlete is healthy but they are actually injured. We therefore moved the classification decision threshold *down* from the default 0.5 to **0.054** (penalty-aware grid search: minimize `5·FN + FP` over 0.05–0.50, averaged across CV folds) so the model maximizes recall (0.953) and minimizes catastrophic false negatives, at the cost of lower precision. Because predicting nearly everyone injured hurts Task A F1, our **primary `submission_final.csv` is the recall-boosted variant** — it flags the top-35%-by-probability athletes (matching the 0.35 injury prevalence). We also ship `submission_modelbased.csv` (the raw 0.054-threshold predictions, ~97% injured) as a reference, and a **recall-boosted submission mode** (`python src/predict.py --recall-mode`) for easy A/B.
+**Why the threshold is 0.054 and not 0.5:** the competition applies a harsh **30-day penalty** whenever we predict an athlete is healthy but they are actually injured. We therefore moved the classification decision threshold *down* from the default 0.5 to **0.054** (penalty-aware grid search: minimize `5·FN + FP` over 0.05–0.50, averaged across CV folds) so the model maximizes recall (0.953) and minimizes catastrophic false negatives, at the cost of lower precision. The OOF confusion matrix at t=0.054 is **TP≈1001, FN=49, FP≈1787, TN≈163** (recall 0.953, precision 0.359). Because predicting nearly everyone injured hurts Task A F1, our **primary `submission_final.csv` is the recall-boosted variant** — it flags the top-35%-by-probability athletes (matching the 0.35 injury prevalence). We also ship `submission_modelbased.csv` (the raw 0.054-threshold predictions, ~97% injured) as a reference, and a **recall-boosted submission mode** (`python src/predict.py --recall-mode`) for easy A/B.
 
 **Baselines for context:** predicting the training mean onset (≈15.3 days) and recovery (≈11.5 days) for every injured athlete gives MAE of 7.61 and 3.24 respectively. Our onset regressor (MAE 2.69) beats this strongly (Skill 0.65); recovery (MAE 3.04) is only marginally better than baseline.
 
@@ -49,7 +49,7 @@ We report **Out-of-Fold (OOF) validation results** from a 5-Fold GroupKFold cros
 ## 3. Key Visual Insights & Model Analytics
 
 ### Insight 1: Predictive Biometric Drivers (Feature Importance)
-The model captures multi-modal strain and recovery signatures. Sleep consistency, sleep efficiency, resting heart rate, and active-to-sedentary minute ratios dominate injury predictability.
+The model captures multi-modal strain and recovery signatures. Sleep consistency, sleep efficiency, resting heart rate, and active-to-sedentary minute ratios dominate injury predictability. **Audit note:** `prior_season_injury_count` is a *strictly historical* baseline (from `athlete_metadata.csv`, pre-Day-1) and ranks only **~45/77** in ensemble importance — it is **not** the top predictor. Its near-zero ablation delta (OOF F1 0.520 → 0.527 when dropped) confirms it carries no leakage and the model is robust without it.
 
 <p align="center">
   <img src="output/feature_importance.png" alt="Feature Importance" width="850"/>
@@ -175,5 +175,7 @@ We perform a penalty-aware sweep of the classification threshold to minimize `5�
 | Memory | Comfortable with 8 GB RAM (hourly files streamed via grouped aggregation) |
 
 
+
+**Presentation deck (PDF):** https://drive.google.com/file/d/1f25bRtJqHmfZgzVx2iLTqk7TeJubk8Rq/view?usp=sharing
 
 *Prepared by Team Y Factor, JIS College of Engineering, for PlayHack 2026 ML Track, IIT Guwahati.*
