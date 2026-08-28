@@ -57,8 +57,8 @@ The model captures multi-modal strain and recovery signatures. Sleep consistency
 
 ---
 
-### Insight 2: Residual Analysis & Regression Calibration (Task B)
-Residual distributions for both **Onset Day Offset** and **Recovery Duration** show unbiased error curves centered tightly around zero, outperforming mean baseline estimates across all cross-validation folds.
+### Insight 2: Residual Analysis & Regression Calibration (Task B) — Aggregated OOF (N=1050)
+Residual distributions for both **Onset Day Offset** and **Recovery Duration** are computed on the **full Out-of-Fold injured set (N=1050)** aggregated across all 5 folds (not a single fold), show unbiased error curves centered tightly around zero, outperforming mean baseline estimates.
 
 <p align="center">
   <img src="output/residuals_plot.png" alt="Residuals and Error Distribution" width="850"/>
@@ -82,22 +82,28 @@ Cross-sport injury risk analysis on the evaluation cohorts demonstrates consiste
 ├── README.md                <-- This file
 ├── requirements.txt         <-- Python package dependencies
 ├── src/
-│   ├── preprocess.py        <-- Data merging, feature engineering & preprocessing
-│   ├── train.py             <-- Cross-validation, model training & artifact export
-│   └── predict.py           <-- Inference script to generate predictions
+│   ├── preprocess.py          <-- Data merging, feature engineering & preprocessing
+│   ├── train.py               <-- Cross-validation, model training & artifact export
+│   ├── predict.py             <-- Inference script to generate predictions
+│   ├── optimize_threshold.py  <-- Penalty-aware, per-fold threshold search (audit)
+│   ├── evaluate_shap.py       <-- SHAP / leakage & ablation diagnostics (audit)
+│   └── insights.py            <-- Test-set visual diagnostics
 ├── models/
 │   ├── ensemble_clf.bin     <-- Saved injury classifier ensemble (+ preprocessor)
 │   ├── ensemble_onset.bin   <-- Saved onset-day regressor ensemble
 │   └── ensemble_rec.bin      <-- Saved recovery-duration regressor ensemble
 ├── output/
-│   ├── feature_importance.png   <-- Charts for the presentation
+│   ├── feature_importance.png       <-- Charts for the presentation
 │   ├── confusion_matrix.png
-│   ├── residuals_plot.png
-│   ├── metrics_summary.txt     <-- Full validation report
-│   ├── submission_final.csv    <-- Primary submission (recall-boosted, top-35% by prob)
-│   ├── submission_modelbased.csv   <-- Reference (raw 0.054-threshold predictions)
+│   ├── residuals_plot.png           <-- OOF residuals, N=1050 (aggregated across folds)
+│   ├── shap_fallback_importance.png <-- SHAP / impurity audit (prior rank 47/77)
+│   ├── metrics_summary.txt          <-- Full validation report (+ ablation audit)
+│   ├── threshold_search.csv         <-- Per-threshold grid (0.05–0.50) for appendix
+│   ├── ablation_report.csv          <-- WITH vs WITHOUT prior_season_injury_count
+│   ├── submission_final.csv         <-- Primary submission (recall-boosted, top-35% by prob)
+│   ├── submission_modelbased.csv    <-- Reference (raw 0.054-threshold predictions)
 │   ├── submission_holdout_demo.csv  <-- Proof the predict path works on real features
-│   └── eda_plots/              <-- 9 EDA insight charts (PPT-ready)
+│   └── eda_plots/                   <-- 9 EDA insight charts (PPT-ready; 04 now Sleep CV)
 └── data/                   <-- Where judges place the raw dataset
     ├── train/              <-- training CSVs (train_labels.csv, athlete_metadata.csv, ...)
     └── test/               <-- test CSVs (same filenames, IDs 3001+)
